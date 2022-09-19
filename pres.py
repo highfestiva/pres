@@ -7,10 +7,13 @@ import os
 class Editor:
   def __init__(self, txt):
     self.lines = txt.splitlines()
+    if txt.endswith('\n'):
+      self.lines.append('')
     self.x = 0
     self.y = 0
     self.cx = 0 # cursor xy
     self.cy = 0
+    self.editable = True
     f = open('/dev/tty')
     os.dup2(f.fileno(), 0)
     curses.wrapper(self.run)
@@ -27,7 +30,7 @@ class Editor:
   def display(self, scr):
     scr.erase()
     maxy, maxx = scr.getmaxyx()
-    for sy, line in enumerate(self.lines[self.y:self.y+maxy]):
+    for sy, line in enumerate(self.lines[self.y:self.y+maxy-1]):
       scr.addstr(sy, 0, line[self.x:self.x+maxx])
     # truncate cursor to end of line
     linelen = len(self.lines[self.cy])
@@ -39,6 +42,7 @@ class Editor:
   def handle_key(self, scr, k):
     maxy, maxx = scr.getmaxyx()
     lowest_y = len(self.lines) - maxy + 1
+    lowest_x = 2
     highest_x = maxx - 2
     if k == 'KEY_PPAGE':
       self.scroll_lines(scr, -maxy, y_cursor=True)
@@ -76,7 +80,23 @@ class Editor:
       self.cy = len(self.lines) - 1
       self.cx = len(self.lines[self.cy])
       self.x = max(0, self.cx-highest_x)
-    elif k == '\x04':
+    elif self.editable and (k == ' ' or k.isalnum()):
+      line = self.lines[self.cy]
+      self.lines[self.cy] = line[:self.cx] + k + line[self.cx:]
+      self.cx += 1
+      if self.cx-self.x > highest_x:
+        self.scroll_rows(scr, +2)
+    elif self.editable and k == 'KEY_BACKSPACE':
+      if self.cx > 0:
+        line = self.lines[self.cy]
+        self.lines[self.cy] = line[:self.cx-1] + line[self.cx:]
+        self.cx -= 1
+        if self.cx-self.x < lowest_x:
+          self.scroll_rows(scr, -2)
+    elif self.editable and k == 'KEY_DC':
+      line = self.lines[self.cy]
+      self.lines[self.cy] = line[:self.cx] + line[self.cx+1:]
+    elif k in '\x04\x18': # Ctrl+D or Ctrl+X
       raise KeyboardInterrupt()
     else:
       print('key:', k.encode())
