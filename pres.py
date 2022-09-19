@@ -4,6 +4,30 @@ import curses
 import os
 
 
+# MSYS translation table
+keys = {
+  'KEY_B1':   'KEY_LEFT',
+  'KEY_B3':   'KEY_RIGHT',
+  'KEY_A2':   'KEY_UP',
+  'KEY_C2':   'KEY_DOWN',
+  'CTL_PAD4': 'kLFT5',
+  'CTL_PAD6': 'kRIT5',
+  'KEY_A3':   'KEY_PPAGE',
+  'KEY_C3':   'KEY_NPAGE',
+  'KEY_A1':   'KEY_HOME',
+  'KEY_C1':   'KEY_END',
+  'CTL_PAD7': 'kHOM5',
+  'CTL_PAD1': 'kEND5',
+  'CTL_PAD8': 'kUP5',
+  'CTL_PAD2': 'kDN5',
+  '\x08':     'KEY_BACKSPACE',
+  'PADSTOP':  'KEY_DC',
+}
+
+
+xlatkey = lambda k: keys.get(k, k)
+
+
 class Editor:
   def __init__(self, txt):
     self.lines = txt.splitlines()
@@ -14,21 +38,24 @@ class Editor:
     self.cx = 0 # cursor xy
     self.cy = 0
     self.editable = True
-    f = open('/dev/tty')
-    os.dup2(f.fileno(), 0)
+    try:
+      f = open('/dev/tty')
+      os.dup2(f.fileno(), 0)
+    except FileNotFoundError:
+      pass # possibly Windows
     curses.wrapper(self.run)
 
   def run(self, scr):
     try:
       while True:
         self.display(scr)
-        self.k = k = scr.getkey()
+        k = xlatkey(scr.getkey())
         self.handle_key(scr, k)
     except KeyboardInterrupt:
       pass
 
   def display(self, scr):
-    scr.erase()
+    scr.clear()
     maxy, maxx = scr.getmaxyx()
     for sy, line in enumerate(self.lines[self.y:self.y+maxy-1]):
       scr.addstr(sy, 0, line[self.x:self.x+maxx])
@@ -36,8 +63,8 @@ class Editor:
     linelen = len(self.lines[self.cy])
     cx = min(self.cx, linelen)
     x = max(0, cx - self.x)
-    scr.move(self.cy - self.y, x)
     scr.refresh()
+    scr.move(self.cy - self.y, x)
   
   def handle_key(self, scr, k):
     maxy, maxx = scr.getmaxyx()
@@ -104,7 +131,7 @@ class Editor:
       self.cy = len(self.lines) - 1
       self.cx = len(self.lines[self.cy])
       self.x = max(0, self.cx-highest_x)
-    elif self.editable and (k == ' ' or k.isalnum()):
+    elif self.editable and k.isprintable() and len(k) == 1:
       self.lines[self.cy] = line[:self.cx] + k + line[self.cx:]
       self.cx += 1
       if self.cx-self.x > highest_x:
