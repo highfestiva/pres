@@ -5,7 +5,7 @@ import os
 
 
 # MSYS translation table
-keys = {
+msys_keys = {
   'KEY_B1':   'KEY_LEFT',
   'KEY_B3':   'KEY_RIGHT',
   'KEY_A2':   'KEY_UP',
@@ -24,26 +24,123 @@ keys = {
   'PADSTOP':  'KEY_DC',
 }
 
+ext2syntax = {
+  'py': { 'keyword': {'for','if','def','True','False','None'} },
+}
 
-xlatkey = lambda k: keys.get(k, k)
+whitespace = ' \t'
+
+
+xlatkey = lambda k: msys_keys.get(k, k)
+
+
+class Token:
+  def __init__(self, copy=None):
+    if copy is None:
+      self.clear()
+    else:
+      self.x0 = copy.x0
+      self.x1 = copy.x1
+      self.s = copy.s
+      self.t = copy.t
+
+  def clear(self):
+    self.x0 = 0
+    self.x1 = 0
+    self.s = ''
+    self.t = ''
+
+  def __repr__(self):
+    return f'{self.s}[{self.t}]'
+
+
+class Tokenizer:
+  def __init__(self, syntax):
+    self.syntax = syntax
+    self.tokens = []
+
+  def tokenize(self, line):
+    token = Token()
+    for i,ch in enumerate(line):
+      print(i, ch)
+      if ch in whitespace:
+        self.close(token, i)
+      elif token.t=='D' and (ch.isdigit() or ch in '._'):
+        self.add(token, i, ch, 'D')
+      elif token.t=='A' and (ch.isalnum() or ch == '_'):
+        self.add(token, i, ch, 'A')
+      elif ch.isalpha():
+        self.add(token, i, ch, 'A')
+      elif ch.isdigit():
+        self.add(token, i, ch, 'D')
+      elif ch.isprintable():
+        self.add(token, i, ch, 'O')
+      else:
+        self.close(token, i)
+    self.close(token, i)
+    return self.tokens
+
+  def close(self, token, i):
+    if token.t:
+      token.x1 = i
+      if token.t == 'A' and self.syntax:
+        if token.s in self.syntax['keyword']:
+          token.t = 'K'
+      self.tokens.append(Token(token))
+      token.clear()
+
+  def add(self, token, i, ch, t):
+    if token.t != t:
+      self.close(token, i)
+      token.x0 = i
+      token.x1 = i+1
+      token.s = ch
+      token.t = t
+      print('added new token', token.s, token.t)
+    else:
+      token.x1 = i+1
+      token.s += ch
+
+
+class Hilighter:
+  def __init__(self, syntax):
+    self.syntax = syntax
+
+  def run(self, lines):
+    self.tokens = []
+    tokenizer = Tokenizer(self.syntax)
+    for line in lines:
+      tokens = tokenizer.tokenize(line)
+      self.tokens.extend(tokens)
+    print(self.tokens)
+
+
+def fn2syntax(fn):
+  ext = os.path.splitext(fn)[1][1:]
+  return ext2syntax.get(ext)
 
 
 class Editor:
-  def __init__(self, txt):
-    self.lines = txt.splitlines()
-    if txt.endswith('\n'):
-      self.lines.append('')
+  def __init__(self, file=None, syntax=None):
+    self.file = file
+    self.syntax = syntax
+    self.lines = ['']
     self.x = 0
     self.y = 0
     self.cx = 0 # cursor xy
     self.cy = 0
     self.editable = True
-    try:
-      f = open('/dev/tty')
-      os.dup2(f.fileno(), 0)
-    except FileNotFoundError:
-      pass # possibly Windows
+
+  def show(self):
+    self.load()
     curses.wrapper(self.run)
+
+  def load(self):
+    if self.file is not None:
+      txt = self.file.read()
+      self.lines = txt.splitlines()
+      if txt.endswith('\n'):
+        self.lines.append('')
 
   def run(self, scr):
     try:
@@ -186,12 +283,25 @@ def main():
   import sys
 
   parser = argparse.ArgumentParser()
-  parser.add_argument('-e', action='store_true', help='refresh editing')
-  parser.add_argument('files', nargs='*', type=argparse.FileType('r'), default=[sys.stdin], help='files to present')
+  parser.add_argument('files', nargs='*', help='files to open')
   options = parser.parse_args()
-  txt = '\n'.join(f.read() for f in options.files)
-  Editor(txt)
 
+  if False: # for sys.stdin...
+    try:
+      f = open('/dev/tty')
+      os.dup2(f.fileno(), 0)
+    except FileNotFoundError:
+      pass # possibly Windows
+
+  editors = []
+  for fn in options.files:
+    editors.append(Editor(open(fn), fn2syntax(fn)))
+  # if not editors:
+    # editors = [Editor()]
+#  editors[0].show()
+
+    Hilighter(ext2syntax['py']).run(['if 123 == a55_23() {True none}'])
+    print()
 
 if __name__ == '__main__':
   main()
