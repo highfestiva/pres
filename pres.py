@@ -75,6 +75,16 @@ class Token:
     return f'{self.s}[{self.t}]'
 
 
+class SyntaxState:
+  def __init__(self, ss=None):
+    self.in_block = False if ss is None else ss.in_block
+    self.new_line()
+
+  def new_line(self):
+    self.in_string = False
+    self.in_comment = False
+
+
 class Tokenizer:
   def __init__(self, syntax):
     self.syntax = syntax
@@ -104,31 +114,43 @@ class Tokenizer:
   def syntax_parse(self, lines):
     if not self.syntax:
       return
-    in_block = False
+    self.line_state = []
+    ss = SyntaxState()
+    syntax_lines = []
     for line in lines:
-      in_string = False
-      in_comment = False
-      for token in line:
-        if in_block:
-          if token.t == 'O' and token.s in self.syntax['block_end']:
-            in_block = False
+      ss.new_line()
+      self.line_state.append(ss)
+      syntax_tokens = self.syntax_parse_line(len(self.line_state)-1, line)
+      ss = SyntaxState(ss)
+      syntax_lines.append(syntax_tokens)
+    return syntax_lines
+
+  def syntax_parse_line(self, idx, line):
+    ss = self.line_state[idx]
+    syntax_line = []
+    for token in line:
+      if ss.in_block:
+        if token.t == 'O' and token.s in self.syntax['block_end']:
+          ss.in_block = False
+        token.t = 'B'
+      elif ss.in_string:
+        if token.t == 'O' and token.s in self.syntax['string']:
+          ss.in_string = False
+        token.t = 'S'
+      elif ss.in_comment:
+        token.t = 'C'
+      elif token.t == 'O':
+        if token.s in self.syntax['block_start']:
+          ss.in_block = True
           token.t = 'B'
-        elif in_string:
-          if token.t == 'O' and token.s in self.syntax['string']:
-            in_string = False
+        elif token.s in self.syntax['string']:
+          ss.in_string = True
           token.t = 'S'
-        elif in_comment:
+        elif token.s in self.syntax['comment']:
+          ss.in_comment = True
           token.t = 'C'
-        elif token.t == 'O':
-          if token.s in self.syntax['block_start']:
-            in_block = True
-            token.t = 'B'
-          elif token.s in self.syntax['string']:
-            in_string = True
-            token.t = 'S'
-          elif token.s in self.syntax['comment']:
-            in_comment = True
-            token.t = 'C'
+      syntax_line.append(token)
+    return syntax_line
 
   def _close(self, token, i):
     if token.t:
@@ -140,7 +162,10 @@ class Tokenizer:
       token.clear()
 
   def _add(self, token, i, ch, t):
-    if token.t != t or t == 'O':
+    if token.t == t == 'O' and token.s.endswith(ch) and ch not in '(){}[]':
+      token.x1 = i+1
+      token.s += ch
+    elif token.t != t or t == 'O':
       self._close(token, i)
       token.x0 = i
       token.x1 = i+1
@@ -154,19 +179,29 @@ class Tokenizer:
 class Hilighter:
   def __init__(self, syntax):
     self.syntax = syntax
+    self.tokenizer = Tokenizer(self.syntax)
 
-  def hilite(self, lines):
-    self.lines = []
-    tokenizer = Tokenizer(self.syntax)
+  def hilite_all(self, lines):
+    self.token_lines = []
     for line in lines:
-      token_line = tokenizer.tokenize(line)
-      self.lines.append(token_line)
-    tokenizer.syntax_parse(self.lines)
+      token_line = self.tokenizer.tokenize(line)
+      self.token_lines.append(token_line)
+    self.syntax_lines = self.tokenizer.syntax_parse(self.token_lines)
+    self._colorize_lines(self.syntax_lines)
+
+  def hilite_line(self, y, lines):
+    token_line = self.tokenizer.tokenize(lines[y])
+    if len([1 for t in self.token_lines[y] if t.t=='B']) == len([1 for t in token_line if t.t=='B']):
+      self.syntax_lines[y] = self.tokenizer.syntax_parse_line(y, token_line)
+      self._colorize_lines([self.syntax_lines[y]])
+    else:
+      self.hilite_all(lines)
+
+  def _colorize_lines(self, syntax_lines):
     # set color
-    for token_line in self.lines:
+    for token_line in syntax_lines:
       for token in token_line:
         token.col = token_color(token.t)
-    return self.lines
 
 
 class Editor:
@@ -182,7 +217,7 @@ class Editor:
 
   def show(self):
     self.load()
-    self.hiliter.hilite(self.lines)
+    self.hiliter.hilite_all(self.lines)
     curses.wrapper(self.run)
 
   def load(self):
@@ -206,8 +241,8 @@ class Editor:
   def display(self, scr):
     portable_erase(scr)
     maxy, maxx = scr.getmaxyx()
-    token_lines = self.hiliter.lines[self.y:self.y+maxy]
-    for sy, token_line in enumerate(token_lines):
+    syntax_lines = self.hiliter.syntax_lines[self.y:self.y+maxy]
+    for sy, token_line in enumerate(syntax_lines):
       for token in token_line:
         x0 = max(0, self.x-token.x0)
         x1 = max(0, min(len(token.s), self.x+maxx-token.x0))
@@ -291,14 +326,17 @@ class Editor:
       self.cx += 1
       if self.cx-self.x > highest_x:
         self.scroll_rows(scr, +2)
+      self.hiliter.hilite_line(self.cy, self.lines)
     elif self.editable and k == 'KEY_BACKSPACE':
       if self.cx > 0:
         self.lines[self.cy] = line[:self.cx-1] + line[self.cx:]
         self.cx -= 1
         if self.cx-self.x < lowest_x:
           self.scroll_rows(scr, -2)
+      self.hiliter.hilite_line(self.cy, self.lines)
     elif self.editable and k == 'KEY_DC':
       self.lines[self.cy] = line[:self.cx] + line[self.cx+1:]
+      self.hiliter.hilite_line(self.cy, self.lines)
     elif k in '\x04\x18': # Ctrl+D or Ctrl+X
       raise KeyboardInterrupt()
     else:
