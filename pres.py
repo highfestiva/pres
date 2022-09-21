@@ -3,6 +3,7 @@
 
 
 import curses
+import json
 import os
 
 
@@ -38,6 +39,36 @@ bgcol = curses.COLOR_BLACK
 
 xlatkey = lambda k: msys_keys.get(k, k)
 portable_erase = lambda scr: scr.clear() if os.name=='nt' else scr.erase()
+
+
+def read_conf_raw():
+  try:
+    fn = os.path.expanduser('~/.pres/config')
+    return json.load(open(fn, 'rt'))
+  except:
+    return {}
+
+
+def write_conf_raw(conf):
+  d = os.path.expanduser('~/.pres')
+  try: os.mkdir(d)
+  except: pass
+  fn = d + '/config'
+  json.dump(conf, open(fn, 'wt'), indent=2)
+
+
+def read_conf(section, key):
+  conf = read_conf_raw()
+  section = conf.get(section, {})
+  return section.get(key)
+
+
+def write_conf(section, key, value):
+  conf = read_conf_raw()
+  if section not in conf:
+    conf[section] = {}
+  conf[section][key] = value
+  write_conf_raw(conf)
 
 
 def fn2syntax(fn):
@@ -215,9 +246,22 @@ class Editor:
     self.cy = 0
     self.editable = True
 
+  def load_state(self):
+    path = os.path.abspath(self.file.name)
+    conf = read_conf('files', path)
+    if conf:
+      self.cy = min(len(self.lines)-1, conf.get('cy', 0))
+      self.cx = min(len(self.lines[self.cy]), conf.get('cx', 0))
+
+  def save_state(self):
+    if self.lines != ['']:
+      path = os.path.abspath(self.file.name)
+      write_conf('files', path, {'cy':self.cy, 'cx':self.cx})
+
   def show(self):
     self.load()
     self.hiliter.hilite_all(self.lines)
+    self.load_state()
     curses.wrapper(self.run)
 
   def load(self):
@@ -228,6 +272,9 @@ class Editor:
         self.lines.append('')
 
   def run(self, scr):
+    maxy, maxx = scr.getmaxyx()
+    self.x = max(0, self.cx-maxx//2)
+    self.y = max(0, self.cy-maxy//2)
     try:
       for i,col in enumerate(colors, 1):
         curses.init_pair(i, col, bgcol)
@@ -395,6 +442,8 @@ def main():
   if not editors:
     editors = [Editor()]
   editors[0].show()
+  for editor in editors:
+    editor.save_state()
 
 
 if __name__ == '__main__':
