@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+'''A simple text editor, trying to immitate the eminating Notepad++.'''
+
 
 import curses
 import os
@@ -30,8 +32,27 @@ ext2syntax = {
 
 whitespace = ' \t'
 
+colors = [curses.COLOR_WHITE, curses.COLOR_BLUE, curses.COLOR_RED, curses.COLOR_GREEN, curses.COLOR_GREEN]
+bgcol = curses.COLOR_BLACK
+
 
 xlatkey = lambda k: msys_keys.get(k, k)
+portable_erase = lambda scr: scr.clear() if os.name=='nt' else scr.erase()
+
+
+def fn2syntax(fn):
+  ext = os.path.splitext(fn)[1][1:]
+  return ext2syntax.get(ext)
+
+
+def token_color(t):
+  if t in 'KO':
+    return 2
+  elif t in 'DS':
+    return 3
+  elif t in 'CB':
+    return 4
+  return 1
 
 
 class Token:
@@ -64,23 +85,52 @@ class Tokenizer:
     i = 0
     for i,ch in enumerate(line):
       if ch in whitespace:
-        self.close(token, i)
+        self._close(token, i)
       elif token.t=='D' and (ch.isdigit() or ch in '._'):
-        self.add(token, i, ch, 'D')
+        self._add(token, i, ch, 'D')
       elif token.t=='A' and (ch.isalnum() or ch == '_'):
-        self.add(token, i, ch, 'A')
+        self._add(token, i, ch, 'A')
       elif ch.isalpha():
-        self.add(token, i, ch, 'A')
+        self._add(token, i, ch, 'A')
       elif ch.isdigit():
-        self.add(token, i, ch, 'D')
+        self._add(token, i, ch, 'D')
       elif ch.isprintable():
-        self.add(token, i, ch, 'O')
+        self._add(token, i, ch, 'O')
       else:
-        self.close(token, i)
-    self.close(token, i)
+        self._close(token, i)
+    self._close(token, i)
     return self.tokens
 
-  def close(self, token, i):
+  def syntax_parse(self, lines):
+    if not self.syntax:
+      return
+    in_block = False
+    for line in lines:
+      in_string = False
+      in_comment = False
+      for token in line:
+        if in_block:
+          if token.t == 'O' and token.s in self.syntax['block_end']:
+            in_block = False
+          token.t = 'B'
+        elif in_string:
+          if token.t == 'O' and token.s in self.syntax['string']:
+            in_string = False
+          token.t = 'S'
+        elif in_comment:
+          token.t = 'C'
+        elif token.t == 'O':
+          if token.s in self.syntax['block_start']:
+            in_block = True
+            token.t = 'B'
+          elif token.s in self.syntax['string']:
+            in_string = True
+            token.t = 'S'
+          elif token.s in self.syntax['comment']:
+            in_comment = True
+            token.t = 'C'
+
+  def _close(self, token, i):
     if token.t:
       token.x1 = i
       if token.t == 'A' and self.syntax:
@@ -89,9 +139,9 @@ class Tokenizer:
       self.tokens.append(Token(token))
       token.clear()
 
-  def add(self, token, i, ch, t):
-    if token.t != t:
-      self.close(token, i)
+  def _add(self, token, i, ch, t):
+    if token.t != t or t == 'O':
+      self._close(token, i)
       token.x0 = i
       token.x1 = i+1
       token.s = ch
@@ -105,33 +155,24 @@ class Hilighter:
   def __init__(self, syntax):
     self.syntax = syntax
 
-  def run(self, lines):
-    token_lines = []
+  def hilite(self, lines):
+    self.lines = []
     tokenizer = Tokenizer(self.syntax)
     for line in lines:
       token_line = tokenizer.tokenize(line)
+      self.lines.append(token_line)
+    tokenizer.syntax_parse(self.lines)
+    # set color
+    for token_line in self.lines:
       for token in token_line:
-        token.col = self.token_col(token.t)
-      token_lines.append(token_line)
-    return token_lines
-
-  def token_col(self, t):
-    if t in 'KO':
-      return 2
-    elif t in 'D':
-      return 3
-    return 1
-
-
-def fn2syntax(fn):
-  ext = os.path.splitext(fn)[1][1:]
-  return ext2syntax.get(ext)
+        token.col = token_color(token.t)
+    return self.lines
 
 
 class Editor:
   def __init__(self, file=None, syntax=None):
     self.file = file
-    self.syntax = syntax
+    self.hiliter = Hilighter(syntax)
     self.lines = ['']
     self.x = 0
     self.y = 0
@@ -141,6 +182,7 @@ class Editor:
 
   def show(self):
     self.load()
+    self.hiliter.hilite(self.lines)
     curses.wrapper(self.run)
 
   def load(self):
@@ -152,9 +194,8 @@ class Editor:
 
   def run(self, scr):
     try:
-      curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLACK)
-      curses.init_pair(2, curses.COLOR_BLUE, curses.COLOR_BLACK)
-      curses.init_pair(3, curses.COLOR_RED, curses.COLOR_BLACK)
+      for i,col in enumerate(colors, 1):
+        curses.init_pair(i, col, bgcol)
       while True:
         self.display(scr)
         k = xlatkey(scr.getkey())
@@ -163,11 +204,9 @@ class Editor:
       pass
 
   def display(self, scr):
-    scr.clear()
+    portable_erase(scr)
     maxy, maxx = scr.getmaxyx()
-    h = Hilighter(self.syntax)
-    token_lines = h.run(self.lines[max(0, self.y-10): self.y+maxy-1])
-    token_lines = token_lines[-maxy+1:]
+    token_lines = self.hiliter.lines[self.y:self.y+maxy]
     for sy, token_line in enumerate(token_lines):
       for token in token_line:
         x0 = max(0, self.x-token.x0)
@@ -179,8 +218,8 @@ class Editor:
     linelen = len(self.lines[self.cy])
     cx = min(self.cx, linelen)
     x = max(0, cx - self.x)
-    scr.refresh()
     scr.move(self.cy - self.y, x)
+    scr.refresh()
   
   def handle_key(self, scr, k):
     maxy, maxx = scr.getmaxyx()
