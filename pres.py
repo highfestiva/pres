@@ -25,7 +25,7 @@ msys_keys = {
 }
 
 ext2syntax = {
-  'py': { 'keyword': {'for','if','def','True','False','None'} },
+  'py': { 'keyword': {'for','if','def','True','False','None'}, 'comment': {'#'}, 'block_start': {"'''",'"""'}, 'block_end': {"'''",'"""'}, 'string': {'"',"'"} },
 }
 
 whitespace = ' \t'
@@ -57,12 +57,12 @@ class Token:
 class Tokenizer:
   def __init__(self, syntax):
     self.syntax = syntax
-    self.tokens = []
 
   def tokenize(self, line):
+    self.tokens = []
     token = Token()
+    i = 0
     for i,ch in enumerate(line):
-      print(i, ch)
       if ch in whitespace:
         self.close(token, i)
       elif token.t=='D' and (ch.isdigit() or ch in '._'):
@@ -96,7 +96,6 @@ class Tokenizer:
       token.x1 = i+1
       token.s = ch
       token.t = t
-      print('added new token', token.s, token.t)
     else:
       token.x1 = i+1
       token.s += ch
@@ -107,12 +106,21 @@ class Hilighter:
     self.syntax = syntax
 
   def run(self, lines):
-    self.tokens = []
+    token_lines = []
     tokenizer = Tokenizer(self.syntax)
     for line in lines:
-      tokens = tokenizer.tokenize(line)
-      self.tokens.extend(tokens)
-    print(self.tokens)
+      token_line = tokenizer.tokenize(line)
+      for token in token_line:
+        token.col = self.token_col(token.t)
+      token_lines.append(token_line)
+    return token_lines
+
+  def token_col(self, t):
+    if t in 'KO':
+      return 2
+    elif t in 'D':
+      return 3
+    return 1
 
 
 def fn2syntax(fn):
@@ -144,6 +152,9 @@ class Editor:
 
   def run(self, scr):
     try:
+      curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLACK)
+      curses.init_pair(2, curses.COLOR_BLUE, curses.COLOR_BLACK)
+      curses.init_pair(3, curses.COLOR_RED, curses.COLOR_BLACK)
       while True:
         self.display(scr)
         k = xlatkey(scr.getkey())
@@ -154,8 +165,16 @@ class Editor:
   def display(self, scr):
     scr.clear()
     maxy, maxx = scr.getmaxyx()
-    for sy, line in enumerate(self.lines[self.y:self.y+maxy-1]):
-      scr.addstr(sy, 0, line[self.x:self.x+maxx])
+    h = Hilighter(self.syntax)
+    token_lines = h.run(self.lines[max(0, self.y-10): self.y+maxy-1])
+    token_lines = token_lines[-maxy+1:]
+    for sy, token_line in enumerate(token_lines):
+      for token in token_line:
+        x0 = max(0, self.x-token.x0)
+        x1 = max(0, min(len(token.s), self.x+maxx-token.x0))
+        s = token.s[x0:x1]
+        if s:
+          scr.addstr(sy, token.x0-self.x, s, curses.color_pair(token.col))
     # truncate cursor to end of line
     linelen = len(self.lines[self.cy])
     cx = min(self.cx, linelen)
@@ -296,12 +315,10 @@ def main():
   editors = []
   for fn in options.files:
     editors.append(Editor(open(fn), fn2syntax(fn)))
-  # if not editors:
-    # editors = [Editor()]
-#  editors[0].show()
+  if not editors:
+    editors = [Editor()]
+  editors[0].show()
 
-    Hilighter(ext2syntax['py']).run(['if 123 == a55_23() {True none}'])
-    print()
 
 if __name__ == '__main__':
   main()
