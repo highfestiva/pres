@@ -5,33 +5,43 @@
 import curses
 import json
 import os
+import string
 
 
 # MSYS translation table
 msys_keys = {
-  'KEY_B1':   'KEY_LEFT',
-  'KEY_B3':   'KEY_RIGHT',
-  'KEY_A2':   'KEY_UP',
-  'KEY_C2':   'KEY_DOWN',
-  'CTL_PAD4': 'kLFT5',
-  'CTL_PAD6': 'kRIT5',
-  'KEY_A3':   'KEY_PPAGE',
-  'KEY_C3':   'KEY_NPAGE',
-  'KEY_A1':   'KEY_HOME',
-  'KEY_C1':   'KEY_END',
-  'CTL_PAD7': 'kHOM5',
-  'CTL_PAD1': 'kEND5',
-  'CTL_PAD8': 'kUP5',
-  'CTL_PAD2': 'kDN5',
-  '\x08':     'KEY_BACKSPACE',
-  'PADSTOP':  'KEY_DC',
+  'KEY_B1':     'KEY_LEFT',
+  'KEY_B3':     'KEY_RIGHT',
+  'KEY_A2':     'KEY_UP',
+  'KEY_C2':     'KEY_DOWN',
+  'CTL_PAD4':   'kLFT5',
+  'CTL_PAD6':   'kRIT5',
+  'CTL_LEFT':   'kLFT5',
+  'CTL_RIGHT':  'kRIT5',
+  'KEY_A3':     'KEY_PPAGE',
+  'KEY_C3':     'KEY_NPAGE',
+  'KEY_A1':     'KEY_HOME',
+  'KEY_C1':     'KEY_END',
+  'CTL_PAD7':   'kHOM5',
+  'CTL_PAD1':   'kEND5',
+  'CTL_HOME':   'kHOM5',
+  'CTL_END':    'kEND5',
+  'CTL_PAD8':   'kUP5',
+  'CTL_PAD2':   'kDN5',
+  '\x08':       'KEY_BACKSPACE',
+  'PADSTOP':    'KEY_DC',
 }
 
 ext2syntax = {
-  'py': { 'keyword': {'for','if','def','True','False','None'}, 'comment': {'#'}, 'block_start': {"'''",'"""'}, 'block_end': {"'''",'"""'}, 'string': {'"',"'"} },
+  'py':       { 'keyword': {'for','if','def','True','False','None'}, 'comment': {'#'}, 'block_start': {"'''",'"""'}, 'block_end': {"'''",'"""'}, 'string': {'"',"'"} },
+  'default':  { 'keyword': {} }
 }
 
-whitespace = ' \t'
+str_whitespace = ' \t'
+str_number = string.digits + '._'
+str_letter = string.ascii_letters + '_'
+str_letter2 = str_letter + string.digits
+str_printable = string.punctuation
 
 colors = [curses.COLOR_WHITE, curses.COLOR_BLUE, curses.COLOR_RED, curses.COLOR_GREEN, curses.COLOR_GREEN]
 bgcol = curses.COLOR_BLACK
@@ -73,7 +83,7 @@ def write_conf(section, key, value):
 
 def fn2syntax(fn):
   ext = os.path.splitext(fn)[1][1:]
-  return ext2syntax.get(ext)
+  return ext2syntax.get(ext, ext2syntax['default'])
 
 
 def token_color(t):
@@ -125,17 +135,17 @@ class Tokenizer:
     token = Token()
     i = 0
     for i,ch in enumerate(line):
-      if ch in whitespace:
+      if ch in str_whitespace:
         self._close(token, i)
-      elif token.t=='D' and (ch.isdigit() or ch in '._'):
+      elif token.t=='D' and ch in str_number:
         self._add(token, i, ch, 'D')
-      elif token.t=='A' and (ch.isalnum() or ch == '_'):
+      elif token.t=='A' and ch in str_letter2:
         self._add(token, i, ch, 'A')
-      elif ch.isalpha():
+      elif ch in str_letter:
         self._add(token, i, ch, 'A')
-      elif ch.isdigit():
+      elif ch in string.digits:
         self._add(token, i, ch, 'D')
-      elif ch.isprintable():
+      elif ch in str_printable:
         self._add(token, i, ch, 'O')
       else:
         self._close(token, i)
@@ -183,12 +193,14 @@ class Tokenizer:
       syntax_line.append(token)
     return syntax_line
 
+  def is_block(self, token):
+    return token.s in self.syntax['block_start'] or token.s in self.syntax['block_end']
+
   def _close(self, token, i):
     if token.t:
       token.x1 = i
-      if token.t == 'A' and self.syntax:
-        if token.s in self.syntax['keyword']:
-          token.t = 'K'
+      if token.t == 'A' and token.s in self.syntax['keyword']:
+        token.t = 'K'
       self.tokens.append(Token(token))
       token.clear()
 
@@ -222,7 +234,8 @@ class Hilighter:
 
   def hilite_line(self, y, lines):
     token_line = self.tokenizer.tokenize(lines[y])
-    if len([1 for t in self.token_lines[y] if t.t=='B']) == len([1 for t in token_line if t.t=='B']):
+    if len([1 for t in self.token_lines[y] if self.tokenizer.is_block(t)]) == len([1 for t in token_line if self.tokenizer.is_block(t)]):
+      self.token_lines[y] = token_line
       self.syntax_lines[y] = self.tokenizer.syntax_parse_line(y, token_line)
       self._colorize_lines([self.syntax_lines[y]])
     else:
@@ -245,6 +258,7 @@ class Editor:
     self.cx = 0 # cursor xy
     self.cy = 0
     self.editable = True
+    self.quit = False
 
   def load_state(self):
     path = os.path.abspath(self.file.name)
@@ -275,32 +289,41 @@ class Editor:
     maxy, maxx = scr.getmaxyx()
     self.x = max(0, self.cx-maxx//2)
     self.y = max(0, self.cy-maxy//2)
-    try:
-      for i,col in enumerate(colors, 1):
-        curses.init_pair(i, col, bgcol)
-      while True:
-        self.display(scr)
+    for i,col in enumerate(colors, 1):
+      curses.init_pair(i, col, bgcol)
+    while not self.quit:
+      self.display(scr)
+      try:
         k = xlatkey(scr.getkey())
         self.handle_key(scr, k)
-    except KeyboardInterrupt:
-      pass
+      except KeyboardInterrupt:
+        pass
 
   def display(self, scr):
     portable_erase(scr)
     maxy, maxx = scr.getmaxyx()
     syntax_lines = self.hiliter.syntax_lines[self.y:self.y+maxy]
+    
+    # truncate cursor to end of line
+    linelen = len(self.lines[self.cy])
+    cx = min(self.cx, linelen)
+    if cx < self.x:
+      self.x = max(0, cx-2)
+    scx = max(0, cx - self.x)
+
     for sy, token_line in enumerate(syntax_lines):
       for token in token_line:
         x0 = max(0, self.x-token.x0)
         x1 = max(0, min(len(token.s), self.x+maxx-token.x0))
         s = token.s[x0:x1]
         if s:
-          scr.addstr(sy, token.x0-self.x, s, curses.color_pair(token.col))
-    # truncate cursor to end of line
-    linelen = len(self.lines[self.cy])
-    cx = min(self.cx, linelen)
-    x = max(0, cx - self.x)
-    scr.move(self.cy - self.y, x)
+          try:
+            sx = max(0, token.x0-self.x)
+            scr.addstr(sy, sx, s, curses.color_pair(token.col))
+          except:
+            print('error:', token, token.x0, self.x, sx, s)
+            exit(1)
+    scr.move(self.cy - self.y, scx)
     scr.refresh()
   
   def handle_key(self, scr, k):
@@ -384,8 +407,8 @@ class Editor:
     elif self.editable and k == 'KEY_DC':
       self.lines[self.cy] = line[:self.cx] + line[self.cx+1:]
       self.hiliter.hilite_line(self.cy, self.lines)
-    elif k in '\x04\x18': # Ctrl+D or Ctrl+X
-      raise KeyboardInterrupt()
+    elif k in '\x18': # Ctrl+X
+      self.quit = True
     else:
       print('key:', k.encode())
 
