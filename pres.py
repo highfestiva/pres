@@ -43,8 +43,27 @@ str_letter = string.ascii_letters + '_'
 str_letter2 = str_letter + string.digits
 str_printable = string.punctuation
 
-colors = [curses.COLOR_WHITE, curses.COLOR_BLUE, curses.COLOR_RED, curses.COLOR_GREEN, curses.COLOR_GREEN]
-bgcol = curses.COLOR_BLACK
+COL_BG,COL_KEYW,COL_COMMENT,COL_OP,COL_NUM,COL_STR,COL_BLOCK,COL_TXT,COL_CNT = range(9)
+colors = {
+  COL_BG:       [   0,    0,    0],
+  COL_TXT:      [1000, 1000, 1000],
+  COL_KEYW:     [ 300,  500, 1000],
+  COL_OP:       [ 300,  800, 1000],
+  COL_NUM:      [1000,  400,  500],
+  COL_STR:      [ 700,  700,  700],
+  COL_COMMENT:  [ 300, 1000,  400],
+  COL_BLOCK:    [1000,  600,  200],
+}
+default_colors = {}
+bgcol = COL_BG
+token2color = {
+  'K': COL_KEYW,
+  'O': COL_OP,
+  'N': COL_NUM,
+  'S': COL_STR,
+  'C': COL_COMMENT,
+  'B': COL_BLOCK,
+}
 
 
 xlatkey = lambda k: msys_keys.get(k, k)
@@ -84,16 +103,6 @@ def write_conf(section, key, value):
 def fn2syntax(fn):
   ext = os.path.splitext(fn)[1][1:]
   return ext2syntax.get(ext, ext2syntax['default'])
-
-
-def token_color(t):
-  if t in 'KO':
-    return 2
-  elif t in 'DS':
-    return 3
-  elif t in 'CB':
-    return 4
-  return 1
 
 
 class Token:
@@ -137,14 +146,14 @@ class Tokenizer:
     for i,ch in enumerate(line):
       if ch in str_whitespace:
         self._close(token, i)
-      elif token.t=='D' and ch in str_number:
-        self._add(token, i, ch, 'D')
+      elif token.t=='N' and ch in str_number:
+        self._add(token, i, ch, 'N')
       elif token.t=='A' and ch in str_letter2:
         self._add(token, i, ch, 'A')
       elif ch in str_letter:
         self._add(token, i, ch, 'A')
       elif ch in string.digits:
-        self._add(token, i, ch, 'D')
+        self._add(token, i, ch, 'N')
       elif ch in str_printable:
         self._add(token, i, ch, 'O')
       else:
@@ -159,7 +168,6 @@ class Tokenizer:
     ss = SyntaxState()
     syntax_lines = []
     for line in lines:
-      ss.new_line()
       self.line_state.append(ss)
       syntax_tokens = self.syntax_parse_line(len(self.line_state)-1, line)
       ss = SyntaxState(ss)
@@ -168,6 +176,7 @@ class Tokenizer:
 
   def syntax_parse_line(self, idx, line):
     ss = self.line_state[idx]
+    ss.new_line()
     syntax_line = []
     for token in line:
       if ss.in_block:
@@ -245,7 +254,7 @@ class Hilighter:
     # set color
     for token_line in syntax_lines:
       for token in token_line:
-        token.col = token_color(token.t)
+        token.col = token2color.get(token.t, COL_TXT)
 
 
 class Editor:
@@ -257,6 +266,7 @@ class Editor:
     self.y = 0
     self.cx = 0 # cursor xy
     self.cy = 0
+    self.vcx = 0 # virtual cursor x, temporary holding x when pgup/dn
     self.editable = True
     self.quit = False
 
@@ -286,11 +296,14 @@ class Editor:
         self.lines.append('')
 
   def run(self, scr):
+    self.store_colors()
     maxy, maxx = scr.getmaxyx()
     self.x = max(0, self.cx-maxx//2)
     self.y = max(0, self.cy-maxy//2)
-    for i,col in enumerate(colors, 1):
-      curses.init_pair(i, col, bgcol)
+    for col,(r,g,b) in colors.items():
+      curses.init_color(col, r, g, b)
+    for col in range(1, COL_CNT):
+      curses.init_pair(col, col, COL_BG)
     while not self.quit:
       self.display(scr)
       try:
@@ -298,6 +311,13 @@ class Editor:
         self.handle_key(scr, k)
       except KeyboardInterrupt:
         pass
+    for col,(r,g,b) in default_colors.items():
+      curses.init_color(col, r, g, b)
+
+  def store_colors(self):
+    if not default_colors:
+      for col in range(COL_CNT):
+        default_colors[col] = curses.color_content(col)
 
   def display(self, scr):
     portable_erase(scr)
@@ -309,7 +329,7 @@ class Editor:
     cx = min(self.cx, linelen)
     if cx < self.x:
       self.x = max(0, cx-2)
-    scx = max(0, cx - self.x)
+    self.vcx = max(0, cx - self.x)
 
     for sy, token_line in enumerate(syntax_lines):
       for token in token_line:
@@ -317,13 +337,9 @@ class Editor:
         x1 = max(0, min(len(token.s), self.x+maxx-token.x0))
         s = token.s[x0:x1]
         if s:
-          try:
-            sx = max(0, token.x0-self.x)
-            scr.addstr(sy, sx, s, curses.color_pair(token.col))
-          except:
-            print('error:', token, token.x0, self.x, sx, s)
-            exit(1)
-    scr.move(self.cy - self.y, scx)
+          sx = max(0, token.x0-self.x)
+          scr.addstr(sy, sx, s, curses.color_pair(token.col))
+    scr.move(self.cy - self.y, self.vcx)
     scr.refresh()
   
   def handle_key(self, scr, k):
@@ -349,14 +365,17 @@ class Editor:
     elif k == 'kDN5': # Ctrl+Down
       self.scroll_lines(scr, +1)
     elif k == 'KEY_LEFT':
+      self.cx = self.vcx
       self.cx = max(0, min(len(self.lines[self.cy])-1, self.cx-1))
       if self.cx <= self.x+1:
         self.scroll_rows(scr, -1)
     elif k == 'KEY_RIGHT':
+      self.cx = self.vcx
       self.cx = min(len(self.lines[self.cy]), self.cx+1)
       if self.cx >= self.y+highest_x:
         self.scroll_rows(scr, +1)
     elif k == 'kLFT5': # Ctrl+Left
+      self.cx = self.vcx
       i = 1
       for i,ch in enumerate(line[self.cx-i::-1], i):
         if ch.isalnum() or ch == '_':
@@ -369,6 +388,7 @@ class Editor:
       if self.cx <= self.x+1:
         self.scroll_rows(scr, -i)
     elif k == 'kRIT5': # Ctrl+Right
+      self.cx = self.vcx
       i = 0
       for i,ch in enumerate(line[self.cx+i:], i):
         if not ch.isalnum() and ch != '_':
@@ -392,12 +412,14 @@ class Editor:
       self.cx = len(self.lines[self.cy])
       self.x = max(0, self.cx-highest_x)
     elif self.editable and k.isprintable() and len(k) == 1:
+      self.cx = self.vcx
       self.lines[self.cy] = line[:self.cx] + k + line[self.cx:]
       self.cx += 1
       if self.cx-self.x > highest_x:
         self.scroll_rows(scr, +2)
       self.hiliter.hilite_line(self.cy, self.lines)
     elif self.editable and k == 'KEY_BACKSPACE':
+      self.cx = self.vcx
       if self.cx > 0:
         self.lines[self.cy] = line[:self.cx-1] + line[self.cx:]
         self.cx -= 1
@@ -405,9 +427,11 @@ class Editor:
           self.scroll_rows(scr, -2)
       self.hiliter.hilite_line(self.cy, self.lines)
     elif self.editable and k == 'KEY_DC':
+      self.cx = self.vcx
       self.lines[self.cy] = line[:self.cx] + line[self.cx+1:]
       self.hiliter.hilite_line(self.cy, self.lines)
     elif k in '\x18': # Ctrl+X
+      self.cx = self.vcx
       self.quit = True
     else:
       print('key:', k.encode())
