@@ -18,6 +18,8 @@ msys_keys = {
   'CTL_PAD6':   'kRIT5',
   'CTL_LEFT':   'kLFT5',
   'CTL_RIGHT':  'kRIT5',
+  'CTL_UP':     'kUP5',
+  'CTL_DOWN':   'kDN5',
   'KEY_A3':     'KEY_PPAGE',
   'KEY_C3':     'KEY_NPAGE',
   'KEY_A1':     'KEY_HOME',
@@ -68,7 +70,50 @@ token2color = {
 
 xlatkey = lambda k: msys_keys.get(k, k)
 portable_erase = lambda scr: scr.clear() if os.name=='nt' else scr.erase()
+is_txt = lambda ch: ch.isalnum() or ch == '_'
+not_txt = lambda ch: not is_txt(ch)
+debug_strs = []
 
+
+def debug(*args):
+  s = ' '.join(str(a) for a in args)
+  debug_strs.append(s)
+
+
+class Point:
+  def __init__(self, y, x):
+    self.x = x
+    self.y = y
+
+
+class Rect:
+  def __init__(self, y, x, h, w):
+    self.x = x
+    self.y = y
+    self.w = w
+    self.h = h
+
+  def contain(self, point):
+    if point.y < self.y:
+      self.y = point.y
+    elif point.y > self.y+self.h-1:
+      self.y = point.y-self.h+1
+    if point.x < self.x:
+      self.x = point.x
+    elif point.x > self.x+self.w-1:
+      self.x = point.x-self.w+1
+
+  def truncate(self, point):
+    if self.y > point.y:
+      point.y = self.y
+    elif self.y+self.h-1 < point.y:
+      point.y = self.y+self.h-1
+    if self.x > point.x:
+      point.x = self.x
+    elif self.x+self.w-1 < point.x:
+      point.x = self.x+self.w-1
+    return point
+      
 
 def read_conf_raw():
   try:
@@ -274,8 +319,8 @@ class Editor:
     path = os.path.abspath(self.file.name)
     conf = read_conf('files', path)
     if conf:
-      self.cy = min(len(self.lines)-1, conf.get('cy', 0))
-      self.cx = min(len(self.lines[self.cy]), conf.get('cx', 0))
+      self.cx = conf.get('cx', 0)
+      self.cy = conf.get('cy', 0)
 
   def save_state(self):
     if self.lines != ['']:
@@ -297,18 +342,23 @@ class Editor:
 
   def run(self, scr):
     self.store_colors()
-    maxy, maxx = scr.getmaxyx()
-    self.x = max(0, self.cx-maxx//2)
-    self.y = max(0, self.cy-maxy//2)
+    self.scr = scr
+
+    maxy, maxx = self.scr.getmaxyx()
+    # center view around loaded cursor
+    dx = self.cx-maxx//2
+    dy = self.cy-maxy//2
+    self.move_delta_yx(0, 0, dy, dx)
+
     for col,(r,g,b) in colors.items():
       curses.init_color(col, r, g, b)
     for col in range(1, COL_CNT):
       curses.init_pair(col, col, COL_BG)
     while not self.quit:
-      self.display(scr)
+      self.display()
       try:
-        k = xlatkey(scr.getkey())
-        self.handle_key(scr, k)
+        k = xlatkey(self.scr.getkey())
+        self.handle_key(k)
       except KeyboardInterrupt:
         pass
     for col,(r,g,b) in default_colors.items():
@@ -319,112 +369,64 @@ class Editor:
       for col in range(COL_CNT):
         default_colors[col] = curses.color_content(col)
 
-  def display(self, scr):
-    portable_erase(scr)
-    maxy, maxx = scr.getmaxyx()
+  def display(self):
+    portable_erase(self.scr)
+    maxy, maxx = self.scr.getmaxyx()
     syntax_lines = self.hiliter.syntax_lines[self.y:self.y+maxy]
-    
-    # truncate cursor to end of line
-    linelen = len(self.lines[self.cy])
-    cx = min(self.cx, linelen)
-    if cx < self.x:
-      self.x = max(0, cx-2)
-    self.vcx = max(0, cx - self.x)
-
-    for sy, token_line in enumerate(syntax_lines):
+    for sy, token_line in enumerate(syntax_lines[1:], 1):
       for token in token_line:
-        x0 = max(0, self.x-token.x0)
-        x1 = max(0, min(len(token.s), self.x+maxx-token.x0))
-        s = token.s[x0:x1]
+        s,sx = self.slice_token(maxx, token)
         if s:
-          sx = max(0, token.x0-self.x)
-          scr.addstr(sy, sx, s, curses.color_pair(token.col))
-    scr.move(self.cy - self.y, self.vcx)
-    scr.refresh()
+          self.scr.addstr(sy, sx, s, curses.color_pair(token.col))
+    s = ('DEBUG: ' + ' ~ '.join(debug_strs))[-maxx:]
+    self.scr.addstr(0, 0, s, curses.color_pair(COL_BLOCK))
+    self.scr.move(self.cy - self.y, self.vcx - self.x)
+    self.scr.refresh()
   
-  def handle_key(self, scr, k):
-    maxy, maxx = scr.getmaxyx()
+  def handle_key(self, k):
+    maxy, maxx = self.scr.getmaxyx()
     lowest_y = len(self.lines) - maxy + 1
     lowest_x = 2
     highest_x = maxx - 2
     line = self.lines[self.cy]
     if k == 'KEY_PPAGE':
-      self.scroll_lines(scr, -maxy, y_cursor=True)
+      self.move_delta_yx(-maxy+1, 0, -maxy+1, 0)
     elif k == 'KEY_NPAGE':
-      self.scroll_lines(scr, +maxy, y_cursor=True)
+      self.move_delta_yx(+maxy-1, 0, +maxy-1, 0)
     elif k == 'KEY_UP':
-      self.cy = max(0, self.cy-1)
-      if self.cy <= self.y+1:
-        self.scroll_lines(scr, -1)
+      self.move_delta_yx(-1, 0)
     elif k == 'KEY_DOWN':
-      self.cy = min(len(self.lines)-1, self.cy+1)
-      if self.cy >= self.y+maxy-2:
-        self.scroll_lines(scr, +1)
+      self.move_delta_yx(+1, 0)
     elif k == 'kUP5': # Ctrl+Up
-      self.scroll_lines(scr, -1)
+      self.move_delta_yx(0, 0, -1, 0)
     elif k == 'kDN5': # Ctrl+Down
-      self.scroll_lines(scr, +1)
+      self.move_delta_yx(0, 0, +1, 0)
     elif k == 'KEY_LEFT':
-      self.cx = self.vcx
-      self.cx = max(0, min(len(self.lines[self.cy])-1, self.cx-1))
-      if self.cx <= self.x+1:
-        self.scroll_rows(scr, -1)
+      self.move_delta_yx(0, -1)
     elif k == 'KEY_RIGHT':
-      self.cx = self.vcx
-      self.cx = min(len(self.lines[self.cy]), self.cx+1)
-      if self.cx >= self.y+highest_x:
-        self.scroll_rows(scr, +1)
+      self.move_delta_yx(0, +1)
     elif k == 'kLFT5': # Ctrl+Left
-      self.cx = self.vcx
-      i = 1
-      for i,ch in enumerate(line[self.cx-i::-1], i):
-        if ch.isalnum() or ch == '_':
-          break
-      for i,ch in enumerate(line[self.cx-i::-1], i):
-        if not ch.isalnum() and ch != '_':
-          break
-      i -= 1
-      self.cx = max(0, min(len(line), self.cx-i))
-      if self.cx <= self.x+1:
-        self.scroll_rows(scr, -i)
+      self.move_word(-1)
     elif k == 'kRIT5': # Ctrl+Right
-      self.cx = self.vcx
-      i = 0
-      for i,ch in enumerate(line[self.cx+i:], i):
-        if not ch.isalnum() and ch != '_':
-          break
-      for i,ch in enumerate(line[self.cx+i:], i):
-        if ch.isalnum() or ch == '_':
-          break
-      self.cx = max(0, min(len(line), self.cx+i))
-      if self.cx == self.x+maxx-1:
-        self.scroll_rows(scr, +i)
+      self.move_word(+1)
     elif k == 'KEY_HOME':
-      self.x = self.cx = 0
+      self.move_delta_yx(0, int(-1e8))
     elif k == 'KEY_END':
-      self.cx = len(self.lines[self.cy])
-      self.x = max(0, self.cx-highest_x)
+      self.move_delta_yx(0, int(+1e8))
     elif k == 'kHOM5':
-      self.x = self.cx = self.y = self.cy = 0
+      self.move_delta_yx(int(-1e8), int(-1e8))
     elif k == 'kEND5':
-      self.y = lowest_y
-      self.cy = len(self.lines) - 1
-      self.cx = len(self.lines[self.cy])
-      self.x = max(0, self.cx-highest_x)
+      self.move_delta_yx(int(+1e8), int(+1e8))
     elif self.editable and k.isprintable() and len(k) == 1:
       self.cx = self.vcx
       self.lines[self.cy] = line[:self.cx] + k + line[self.cx:]
-      self.cx += 1
-      if self.cx-self.x > highest_x:
-        self.scroll_rows(scr, +2)
+      self.move_delta_yx(0, +1)
       self.hiliter.hilite_line(self.cy, self.lines)
     elif self.editable and k == 'KEY_BACKSPACE':
       self.cx = self.vcx
       if self.cx > 0:
         self.lines[self.cy] = line[:self.cx-1] + line[self.cx:]
-        self.cx -= 1
-        if self.cx-self.x < lowest_x:
-          self.scroll_rows(scr, -2)
+        self.move_delta_yx(0, -1)
       self.hiliter.hilite_line(self.cy, self.lines)
     elif self.editable and k == 'KEY_DC':
       self.cx = self.vcx
@@ -436,36 +438,54 @@ class Editor:
     else:
       print('key:', k.encode())
 
-  def scroll_rows(self, scr, dx):
-    maxy, maxx = scr.getmaxyx()
-    self.x = max(0, self.x+dx)
-    return
+  def slice_token(self, maxx, token):
+    x0 = max(0, self.x-token.x0)
+    x1 = max(0, min(len(token.s), self.x+maxx-token.x0))
+    s = token.s[x0:x1]
+    sx = max(0, token.x0-self.x)
+    return s, sx
 
-  def scroll_lines(self, scr, dy, y_cursor=False):
-    maxy, maxx = scr.getmaxyx()
-    lowest_y = len(self.lines) - maxy + 1
-    y = self.y + dy
-    if y <= 0:
-      if self.y == 0 and y_cursor:
-        if self.cy == 0:
-          self.cx = 0
-        else:
-          self.cy = 0
-      y = 0
-    elif y >= lowest_y:
-      if self.y == lowest_y and y_cursor:
-        if self.cy == len(self.lines)-1:
-          self.cx = len(self.lines[-1])
-        else:
-          self.cy = len(self.lines)-1
-      y = lowest_y
+  def move_delta_yx(self, dy, dx, sdy=0, sdx=0):
+    maxy, maxx = self.scr.getmaxyx()
+    # adjust screen position
+    longest_line = max(len(l) for l in self.lines) if self.lines else 0
+    self.y = max(0, min(len(self.lines)-maxy, self.y+sdy))
+    self.x = max(0, min(longest_line-maxx//2, self.x+sdx))
+    screen_rect = Rect(self.y, self.x, maxy, maxx)
+    # adjust cursor position
+    self.set_cursor_yx(self.cy+dy, self.cx+dx)
+    if dx or dy:
+      # scroll screen to follow cursor
+      screen_rect.contain(Point(self.cy, self.vcx))
+      self.y = screen_rect.y
+      self.x = screen_rect.x
+    else:
+      # put cursor into screen
+      cursor_pos = screen_rect.truncate(Point(self.cy, self.cx))
+      self.set_cursor_yx(cursor_pos.y, cursor_pos.x)
+    if dx:
+      self.cx = self.vcx
 
-    d = y - self.y
-    self.y += d
-    if y_cursor:
-      self.cy = min(len(self.lines)-1, max(0, self.cy+d))
-    self.cy = min(self.y+maxy-1, self.cy)
-    self.cy = max(self.y, self.cy)
+  def set_cursor_yx(self, y, x):
+    self.cy = max(0, min(len(self.lines)-1, y))
+    self.vcx = max(0, min(len(self.lines[self.cy]), x))
+
+  def move_word(self, direction):
+    self.cx = self.vcx
+    line = self.lines[self.cy]
+    x = self.cx if direction>0 else self.cx-1
+    step = +1 if direction>0 else -1
+    matchers = [(not_txt,0), (is_txt,0)] if direction>0 else [(is_txt,0), (not_txt,+1)]
+    for match,hit_moveback in matchers:
+      while x+step >= 0 and x+step <= len(line):
+        if x == len(line):
+          break
+        ch = line[x]
+        if match(ch):
+          x += hit_moveback
+          break
+        x += step
+    self.move_delta_yx(0, x-self.cx)
 
 
 def main():
