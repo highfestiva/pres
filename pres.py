@@ -375,13 +375,14 @@ class Editor:
     portable_erase(self.scr)
     maxy, maxx = self.scr.getmaxyx()
     syntax_lines = self.hiliter.syntax_lines[self.y:self.y+maxy]
-    for sy, token_line in enumerate(syntax_lines[1:], 1):
+    for sy, token_line in enumerate(syntax_lines, 0):
       for token in token_line:
         s,sx = self.slice_token(maxx, token)
         if s:
           self.scr.addstr(sy, sx, s, curses.color_pair(token.col))
-    s = ('DEBUG: ' + ' ~ '.join(debug_strs))[:maxx]
-    self.scr.addstr(0, 0, s, curses.color_pair(COL_BLOCK))
+    if debug_strs:
+      s = ('DEBUG: ' + ' ~ '.join(debug_strs))[:maxx]
+      self.scr.addstr(0, 0, s, curses.color_pair(COL_BLOCK))
     self.scr.move(self.cy - self.y, self.vcx - self.x)
     self.scr.refresh()
   
@@ -404,9 +405,9 @@ class Editor:
     elif k == 'kDN5': # Ctrl+Down
       self.move_delta_yx(0, 0, +1, 0)
     elif k == 'KEY_LEFT':
-      self.move_delta_yx(0, -1)
+      self.move_delta_wrap_x(-1)
     elif k == 'KEY_RIGHT':
-      self.move_delta_yx(0, +1)
+      self.move_delta_wrap_x(+1)
     elif k == 'kLFT5': # Ctrl+Left
       self.move_word(-1)
     elif k == 'kRIT5': # Ctrl+Right
@@ -463,7 +464,6 @@ class Editor:
         self.move_delta_yx(-1, +1e8) # go to end of previous line
         self.lines[self.cy] += line # append line
         del self.lines[self.cy+1] # remove line
-        debug(self.lines[self.cy+1])
         self.hiliter.hilite_all(self.lines)
 
   def smart_indent(self):
@@ -483,8 +483,18 @@ class Editor:
     sx = max(0, token.x0-self.x)
     return s, sx
 
+  def move_delta_wrap_x(self, dx):
+    if self.cx+dx < 0:
+      self.move_delta_yx(-1, +1e8 if self.cy > 0 else 0)
+    elif self.cx+dx > len(self.lines[self.cy]):
+      self.move_delta_yx(+1, -1e8)
+    else:
+      self.move_delta_yx(0, dx)
+
   def move_delta_yx(self, dy, dx, sdy=0, sdx=0):
     maxy, maxx = self.scr.getmaxyx()
+    if dx == 0 and dy < 0 and self.y == 0:
+      dx = -1e8
     # adjust screen position
     longest_line = max(len(l) for l in self.lines) if self.lines else 0
     self.y = max(0, min(len(self.lines)-maxy, self.y+sdy))
@@ -508,12 +518,18 @@ class Editor:
     self.cy = max(0, min(len(self.lines)-1, y))
     self.vcx = max(0, min(len(self.lines[self.cy]), x))
 
-  def move_word(self, direction):
+  def move_word(self, direction, skip_first_matcher=False):
     self.cx = self.vcx
+    if direction>0 and self.cx==len(self.lines[self.cy]) and self.cy<len(self.lines)-1:
+      self.move_delta_yx(+1, -1e8)
+      self.move_word(direction, skip_first_matcher=True)
+      return
     line = self.lines[self.cy]
     x = self.cx if direction>0 else self.cx-1
     step = +1 if direction>0 else -1
     matchers = [(not_txt,0), (is_txt,0)] if direction>0 else [(is_txt,0), (not_txt,+1)]
+    if skip_first_matcher:
+      matchers = matchers[1:]
     for match,hit_moveback in matchers:
       while x+step >= 0 and x+step <= len(line):
         if x == len(line):
@@ -524,6 +540,8 @@ class Editor:
           break
         x += step
     self.move_delta_yx(0, x-self.cx)
+    while direction<0 and self.cx == 0 and self.cy > 0:
+      self.move_delta_wrap_x(-1)
 
 
 def main():
