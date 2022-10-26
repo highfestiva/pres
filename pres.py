@@ -35,7 +35,8 @@ msys_keys = {
 }
 
 ext2syntax = {
-  'py':       { 'keyword': {'for','if','def','True','False','None'}, 'comment': {'#'}, 'block_start': {"'''",'"""'}, 'block_end': {"'''",'"""'}, 'string': {'"',"'"} },
+  'py':       { 'keyword': {'for','if','def','True','False','None'}, 'comment': {'#'}, 'block_start': {"'''",'"""'}, 'block_end': {"'''",'"""'}, 'string': {'"',"'"},
+                'indent':  {'eol_char': ':', 'string': '  '} },
   'default':  { 'keyword': {} }
 }
 
@@ -77,7 +78,7 @@ debug_strs = []
 
 def debug(*args):
   s = ' '.join(str(a) for a in args)
-  debug_strs.append(s)
+  debug_strs.insert(0, s)
 
 
 class Point:
@@ -306,6 +307,7 @@ class Editor:
   def __init__(self, file=None, syntax=None):
     self.file = file
     self.hiliter = Hilighter(syntax)
+    self.syntax = syntax
     self.lines = ['']
     self.x = 0
     self.y = 0
@@ -378,7 +380,7 @@ class Editor:
         s,sx = self.slice_token(maxx, token)
         if s:
           self.scr.addstr(sy, sx, s, curses.color_pair(token.col))
-    s = ('DEBUG: ' + ' ~ '.join(debug_strs))[-maxx:]
+    s = ('DEBUG: ' + ' ~ '.join(debug_strs))[:maxx]
     self.scr.addstr(0, 0, s, curses.color_pair(COL_BLOCK))
     self.scr.move(self.cy - self.y, self.vcx - self.x)
     self.scr.refresh()
@@ -419,24 +421,60 @@ class Editor:
       self.move_delta_yx(int(+1e8), int(+1e8))
     elif self.editable and k.isprintable() and len(k) == 1:
       self.cx = self.vcx
+      self.insert_char(k, line)
+    elif self.editable and k == 'KEY_BACKSPACE':
+      self.cx = self.vcx
+      self.remove_char(-1, k, line)
+    elif self.editable and k == 'KEY_DC':
+      self.cx = self.vcx
+      self.remove_char(0, k, line)
+    elif k == '\x18': # Ctrl+X
+      self.cx = self.vcx
+      self.quit = True
+    elif k == '\n':
+      self.cx = self.vcx
+      self.insert_char(k, line)
+    else:
+      debug('key:', k.encode())
+
+  def insert_char(self, k, line):
+    if k == '\n':
+      self.lines[self.cy] = line[:self.cx]
+      self.lines.insert(self.cy+1, line[self.cx:])
+      self.move_delta_yx(+1, -1e8)
+      self.smart_indent()
+      self.hiliter.hilite_all(self.lines)
+    else:
       self.lines[self.cy] = line[:self.cx] + k + line[self.cx:]
       self.move_delta_yx(0, +1)
       self.hiliter.hilite_line(self.cy, self.lines)
-    elif self.editable and k == 'KEY_BACKSPACE':
-      self.cx = self.vcx
-      if self.cx > 0:
+
+  def remove_char(self, dx, k, line):
+      if dx == 0: # DEL
+        if self.cx == len(self.lines[self.cy]):
+          self.move_delta_yx(+1, -1e8)  # go to beginning of next line
+        else:
+          self.move_delta_yx(0, +1) # step right
+      if self.cx > 0: # delete single character
         self.lines[self.cy] = line[:self.cx-1] + line[self.cx:]
         self.move_delta_yx(0, -1)
-      self.hiliter.hilite_line(self.cy, self.lines)
-    elif self.editable and k == 'KEY_DC':
-      self.cx = self.vcx
-      self.lines[self.cy] = line[:self.cx] + line[self.cx+1:]
-      self.hiliter.hilite_line(self.cy, self.lines)
-    elif k in '\x18': # Ctrl+X
-      self.cx = self.vcx
-      self.quit = True
-    else:
-      print('key:', k.encode())
+        self.hiliter.hilite_line(self.cy, self.lines)
+      elif self.cy > 0: # delete linefeed
+        self.move_delta_yx(-1, +1e8) # go to end of previous line
+        self.lines[self.cy] += line # append line
+        del self.lines[self.cy+1] # remove line
+        debug(self.lines[self.cy+1])
+        self.hiliter.hilite_all(self.lines)
+
+  def smart_indent(self):
+    for ch in self.lines[self.cy-1]:
+      if ch in ' \t':
+        self.insert_char(ch, self.lines[self.cy])
+      else:
+        break
+    if self.lines[self.cy-1][-1] in self.syntax['indent']['eol_char']:
+      for ch in self.syntax['indent']['string']:
+        self.insert_char(ch, self.lines[self.cy])
 
   def slice_token(self, maxx, token):
     x0 = max(0, self.x-token.x0)
