@@ -46,6 +46,8 @@ str_letter = string.ascii_letters + '_'
 str_letter2 = str_letter + string.digits
 str_printable = string.punctuation
 
+tab_size = 2
+
 COL_BG,COL_KEYW,COL_COMMENT,COL_OP,COL_NUM,COL_STR,COL_BLOCK,COL_TXT,COL_CNT = range(9)
 colors = {
   COL_BG:       [   0,    0,    0],
@@ -377,7 +379,7 @@ class Editor:
     syntax_lines = self.hiliter.syntax_lines[self.y:self.y+maxy]
     for sy, token_line in enumerate(syntax_lines, 0):
       for token in token_line:
-        s,sx = self.slice_token(maxx, token)
+        s,sx = self.slice_token(maxx, sy, maxy, token)
         if s:
           self.scr.addstr(sy, sx, s, curses.color_pair(token.col))
     if debug_strs:
@@ -435,6 +437,9 @@ class Editor:
     elif k == '\n':
       self.cx = self.vcx
       self.insert_char(k, line)
+    elif k == '\t':
+      self.cx = self.vcx
+      self.insert_char(k, line)
     else:
       debug('key:', k.encode())
 
@@ -445,6 +450,11 @@ class Editor:
       self.move_delta_yx(+1, -1e8)
       self.smart_indent()
       self.hiliter.hilite_all(self.lines)
+    elif k == '\t':
+      wspace = ' ' * (tab_size - (self.cx % tab_size))
+      self.lines[self.cy] = line[:self.cx] + wspace + line[self.cx:]
+      self.move_delta_yx(0, +len(wspace))
+      self.hiliter.hilite_line(self.cy, self.lines)
     else:
       self.lines[self.cy] = line[:self.cx] + k + line[self.cx:]
       self.move_delta_yx(0, +1)
@@ -472,11 +482,13 @@ class Editor:
         self.insert_char(ch, self.lines[self.cy])
       else:
         break
-    if self.lines[self.cy-1][-1] in self.syntax['indent']['eol_char']:
+    if self.lines[self.cy-1] and self.lines[self.cy-1][-1] in self.syntax['indent']['eol_char']:
       for ch in self.syntax['indent']['string']:
         self.insert_char(ch, self.lines[self.cy])
 
-  def slice_token(self, maxx, token):
+  def slice_token(self, maxx, sy, maxy, token):
+    if sy == maxy-1: # bottom line does not allow last character printed, probably due to auto-lf
+      maxx -= 1
     x0 = max(0, self.x-token.x0)
     x1 = max(0, min(len(token.s), self.x+maxx-token.x0))
     s = token.s[x0:x1]
@@ -493,7 +505,7 @@ class Editor:
 
   def move_delta_yx(self, dy, dx, sdy=0, sdx=0):
     maxy, maxx = self.scr.getmaxyx()
-    if dx == 0 and dy < 0 and self.y == 0:
+    if dx == 0 and dy < 0 and self.cy == 0:
       dx = -1e8
     # adjust screen position
     longest_line = max(len(l) for l in self.lines) if self.lines else 0
@@ -559,14 +571,19 @@ def main():
     except FileNotFoundError:
       pass # possibly Windows
 
-  editors = []
-  for fn in options.files:
-    editors.append(Editor(open(fn), fn2syntax(fn)))
-  if not editors:
-    editors = [Editor()]
-  editors[0].show()
-  for editor in editors:
-    editor.save_state()
+  try:
+    editors = []
+    for fn in options.files:
+      editors.append(Editor(open(fn), fn2syntax(fn)))
+    if not editors:
+      editors = [Editor()]
+    editors[0].show()
+    for editor in editors:
+      editor.save_state()
+  except Exception as ex:
+    for d in debug_strs:
+      print(d)
+    raise ex
 
 
 if __name__ == '__main__':
