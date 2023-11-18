@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-'''A simple text editor, trying to immitate the eminating Notepad++.'''
+'''A simple text editor, trying to immitate the eminate Notepad++.'''
 
 
 import curses
@@ -31,13 +31,14 @@ msys_keys = {
   'CTL_PAD8':   'kUP5',
   'CTL_PAD2':   'kDN5',
   '\x08':       'KEY_BACKSPACE',
+  '\x13':       'kS',
   'PADSTOP':    'KEY_DC',
 }
 
 ext2syntax = {
-  'py':       { 'keyword': {'for','if','def','True','False','None'}, 'comment': {'#'}, 'block_start': {"'''",'"""'}, 'block_end': {"'''",'"""'}, 'string': {'"',"'"},
-                'indent':  {'eol_char': ':', 'string': '  '} },
-  'default':  { 'keyword': {} }
+  'py':       { 'keyword': set('for while if elif else def return class and or not in break import except raise True False None'.split()),
+                'comment': {'#'}, 'block_start': {"'''",'"""'}, 'block_end': {"'''",'"""'}, 'string': {'"',"'"}, 'indent':  {'eol_char': ':', 'string': '  '} },
+  'default':  { 'keyword': {}, 'comment': {}, 'block_start': {}, 'block_end': {}, 'string': {}, 'indent':  {'eol_char': [], 'string': ''} }
 }
 
 str_whitespace = ' \t'
@@ -306,8 +307,15 @@ class Hilighter:
 
 
 class Editor:
-  def __init__(self, file=None, syntax=None):
-    self.file = file
+  def __init__(self, filename=None, syntax=ext2syntax['default']):
+    if filename:
+      try:
+        self.file = open(filename)
+      except:
+        self.file = None
+        debug('ERROR: unable to open file "{filename}"')
+    else:
+      self.file = None
     self.hiliter = Hilighter(syntax)
     self.syntax = syntax
     self.lines = ['']
@@ -320,6 +328,8 @@ class Editor:
     self.quit = False
 
   def load_state(self):
+    if not self.file:
+      return
     path = os.path.abspath(self.file.name)
     conf = read_conf('files', path)
     if conf:
@@ -328,8 +338,9 @@ class Editor:
 
   def save_state(self):
     if self.lines != ['']:
-      path = os.path.abspath(self.file.name)
-      write_conf('files', path, {'cy':self.cy, 'cx':self.cx})
+      if self.file:
+        path = os.path.abspath(self.file.name)
+        write_conf('files', path, {'cy':self.cy, 'cx':self.cx})
 
   def show(self):
     self.load()
@@ -389,6 +400,7 @@ class Editor:
     self.scr.refresh()
   
   def handle_key(self, k):
+    # debug(f'key={k}')
     maxy, maxx = self.scr.getmaxyx()
     lowest_y = len(self.lines) - maxy + 1
     lowest_x = 2
@@ -440,6 +452,17 @@ class Editor:
     elif k == '\t':
       self.cx = self.vcx
       self.insert_char(k, line)
+    elif k == 'KEY_BTAB':
+      self.cx = self.vcx
+      self.insert_char('BTAB', line)
+    elif k == '\x0c':
+      if self.cy == len(self.lines)-1:
+        self.lines[self.cy] = ''
+      else:
+        del self.lines[self.cy]
+      self.vcx = self.cx = 0
+      self.move_delta_yx(0, 0)
+      self.hiliter.hilite_all(self.lines)
     else:
       debug('key:', k.encode())
 
@@ -454,6 +477,17 @@ class Editor:
       wspace = ' ' * (tab_size - (self.cx % tab_size))
       self.lines[self.cy] = line[:self.cx] + wspace + line[self.cx:]
       self.move_delta_yx(0, +len(wspace))
+      self.hiliter.hilite_line(self.cy, self.lines)
+    elif k == 'BTAB':
+      new_pos = max(0, (self.cx-1) - ((self.cx-1) % tab_size))
+      offset = new_pos - self.cx
+      self.move_delta_yx(0, offset)
+      i = self.cx
+      if all(ch in ' \t' for ch in line[:i]):
+          for i,ch in enumerate(line[i:], i):
+            if ch not in ' \t':
+              break
+      self.lines[self.cy] = line[:self.cx] + line[i:]
       self.hiliter.hilite_line(self.cy, self.lines)
     else:
       self.lines[self.cy] = line[:self.cx] + k + line[self.cx:]
@@ -574,14 +608,14 @@ def main():
   try:
     editors = []
     for fn in options.files:
-      editors.append(Editor(open(fn), fn2syntax(fn)))
+      editors.append(Editor(fn, fn2syntax(fn)))
     if not editors:
       editors = [Editor()]
     editors[0].show()
     for editor in editors:
       editor.save_state()
   except Exception as ex:
-    for d in debug_strs:
+    for d in debug_strs[50::-1]:
       print(d)
     raise ex
 
